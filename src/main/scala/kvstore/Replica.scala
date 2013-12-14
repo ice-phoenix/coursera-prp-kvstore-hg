@@ -39,13 +39,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import Persistence._
   import context.dispatcher
 
+  // KV store
   var kv = Map.empty[String, String]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
-
-  arbiter ! Join
+  // logical clock
+  var lClock = 0L
 
   def receive = {
     case JoinedPrimary => context.become(leader)
@@ -66,8 +67,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
   }
 
-  var lClock = 0L
-
   val replica: Receive = {
     case Get(k, id) => {
       sender ! GetResult(k, kv.get(k), id)
@@ -87,5 +86,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       lClock += 1
     }
   }
+
+  // We're ready!
+  arbiter ! Join
 
 }
