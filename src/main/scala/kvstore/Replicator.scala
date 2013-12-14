@@ -39,13 +39,13 @@ class Replicator(val replica: ActorRef) extends Actor {
   def receive: Receive = {
     case Replicate(key, vOpt, id) => {
       val seq = getLClockAndIncrement
-      val oldAcks = pending.put(key, Snapshot(key, vOpt, seq)) match {
-        case None => List.empty[(ActorRef, Long)]
-        case Some(s) => acks.getOrElse(s.seq, List.empty[(ActorRef, Long)])
-      }
-      val newAcks = (sender, id) :: oldAcks
+      val newAcks = (sender, id) ::
+        pending.put(key, Snapshot(key, vOpt, seq))
+        .map { s => acks.getOrElse(s.seq, List.empty[(ActorRef, Long)]) }
+        .getOrElse { List.empty[(ActorRef, Long)] }
       acks.put(seq, newAcks)
     }
+
     case SnapshotAck(key, seq) => {
       if (seq == pending.get(key).seq) {
         pending.remove(key)
@@ -57,10 +57,12 @@ class Replicator(val replica: ActorRef) extends Actor {
         }
       }
     }
+
     case SendPendingSnapshots => {
       pending.values.toIndexedSeq.sortBy { _.seq }
       .foreach { replica ! _ }
     }
+
     case Terminated(`replica`) => {
       context.stop(self)
     }

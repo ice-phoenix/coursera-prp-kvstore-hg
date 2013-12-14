@@ -12,6 +12,7 @@ import akka.actor.PoisonPill
 import akka.actor.OneForOneStrategy
 import akka.actor.SupervisorStrategy
 import akka.util.Timeout
+import scala.collection.mutable
 
 object Replica {
 
@@ -38,6 +39,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import Replicator._
   import Persistence._
   import context.dispatcher
+  import akka.actor.SupervisorStrategy._
+
+  override val supervisorStrategy =
+    OneForOneStrategy(maxNrOfRetries = 2, withinTimeRange = 1 second) {
+      case _: Exception => Stop
+    }
+
+  private case class TimedOut(val id: Long)
 
   // KV store
   var kv = Map.empty[String, String]
@@ -47,6 +56,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var replicators = Set.empty[ActorRef]
   // logical clock
   var lClock = 0L
+  // persistence storage
+  var persistence = context.actorOf(persistenceProps)
+  // not-yet-confirmed persistence msgs
+  var pending = mutable.HashMap.empty[Long, (ActorRef, Persist)]
 
   def receive = {
     case JoinedPrimary => context.become(leader)
@@ -67,10 +80,19 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
   }
 
+  def forwardToPersistence(from: ActorRef, key: String, valueOption: Option[String], id: Long) = {
+    val persist = Persist(key, valueOption, id)
+    persistence ! persist
+    pending.put(id, (from, persist))
+
+    context.system.scheduler.scheduleOnce(1 second, self, TimedOut(id))
+  }
+
   val replica: Receive = {
     case Get(k, id) => {
       sender ! GetResult(k, kv.get(k), id)
     }
+
     case Snapshot(k, vOpt, seq) if seq > lClock => {
       // ignore
     }
@@ -82,11 +104,26 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         case Some(v) => kv = kv + ((k, v))
         case None => kv = kv - k
       }
-      sender ! SnapshotAck(k, seq)
+      forwardToPersistence(sender, k, vOpt, seq)
       lClock += 1
+    }
+
+    case Persisted(k, id) => {
+      pending.remove(id)
+      .map { case (target, _) => target ! SnapshotAck(k, id) }
+    }
+    case TimedOut(id) => {
+      pending.remove(id)
+    }
+
+    case Terminated(child) if persistence == child => {
+      persistence = context.actorOf(persistenceProps)
+      pending.values.foreach { case (_, msg) => persistence ! msg }
     }
   }
 
+  // We're watching you!
+  context.watch(persistence)
   // We're ready!
   arbiter ! Join
 
