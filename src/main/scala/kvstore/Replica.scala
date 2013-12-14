@@ -96,9 +96,9 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   }
 
   private def removePendingPersist(id: Long) = pendingPersists.remove(id)
-  private def removePendingReplicate(id: Long)(implicit sender: ActorRef) = {
+  private def removePendingReplicate(id: Long, from: ActorRef) = {
     pendingReplicates.get(id)
-    .map { _.completeOn(sender) }
+    .map { _.completeOn(from) }
     .foreach { pr => if (pr.isEmpty) pendingReplicates.remove(id) else pendingReplicates.put(id, pr) }
   }
 
@@ -210,7 +210,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       .foreach { addSecondary(_) }
     }
     case Replicated(k, id) => {
-      removePendingReplicate(id)
+      removePendingReplicate(id, sender)
       tryComplete(id)
     }
   }
