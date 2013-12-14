@@ -47,6 +47,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
 
   private case class TimedOut(val id: Long)
+  private case object SendPendingPersists
 
   // KV store
   var kv = Map.empty[String, String]
@@ -116,9 +117,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       pending.remove(id)
     }
 
+    case SendPendingPersists => {
+      pending.values.foreach { case (_, msg) => persistence ! msg }
+    }
+
     case Terminated(child) if persistence == child => {
       persistence = context.actorOf(persistenceProps)
-      pending.values.foreach { case (_, msg) => persistence ! msg }
+      context.watch(persistence)
+      self ! SendPendingPersists
     }
   }
 
@@ -126,5 +132,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   context.watch(persistence)
   // We're ready!
   arbiter ! Join
+  // We retry persistence every 100 ms
+  context.system.scheduler.schedule(0 millis, 100 millis, self, SendPendingPersists)
 
 }
