@@ -125,7 +125,13 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
 
 
-  private def addSecondary(replica: ActorRef) = secondaries.put(replica, context.actorOf(Replicator.props(replica)))
+  private def addSecondary(replica: ActorRef) = {
+    val replicator = context.actorOf(Replicator.props(replica))
+    secondaries.put(replica, replicator)
+    kv.zipWithIndex.foreach {
+      case ((k, v), i) => replicator ! Replicate(k, Some(v), i)
+    }
+  }
   private def removeSecondary(replica: ActorRef, replicator: ActorRef) = {
     secondaries.remove(replica)
     context.stop(replicator)
