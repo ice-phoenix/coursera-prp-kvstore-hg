@@ -3,6 +3,7 @@ package kvstore
 import akka.actor.{Actor, ActorRef, Props, Terminated}
 import scala.concurrent.duration._
 import scala.collection.mutable
+import scala.language.postfixOps
 
 object Replicator {
 

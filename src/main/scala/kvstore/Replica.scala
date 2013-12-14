@@ -3,6 +3,7 @@ package kvstore
 import akka.actor.{Actor, ActorRef, OneForOneStrategy, Props, Terminated}
 import scala.collection.mutable
 import scala.concurrent.duration._
+import scala.language.postfixOps
 
 import kvstore.Arbiter._
 
