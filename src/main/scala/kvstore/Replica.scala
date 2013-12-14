@@ -1,11 +1,11 @@
 package kvstore
 
-import akka.actor.{ OneForOneStrategy, Props, ActorRef, Actor }
+import akka.actor.{OneForOneStrategy, Props, ActorRef, Actor}
 import kvstore.Arbiter._
 import scala.collection.immutable.Queue
 import akka.actor.SupervisorStrategy.Restart
 import scala.annotation.tailrec
-import akka.pattern.{ ask, pipe }
+import akka.pattern.{ask, pipe}
 import akka.actor.Terminated
 import scala.concurrent.duration._
 import akka.actor.PoisonPill
@@ -14,10 +14,12 @@ import akka.actor.SupervisorStrategy
 import akka.util.Timeout
 
 object Replica {
+
   sealed trait Operation {
     def key: String
     def id: Long
   }
+
   case class Insert(key: String, value: String, id: Long) extends Operation
   case class Remove(key: String, id: Long) extends Operation
   case class Get(key: String, id: Long) extends Operation
@@ -31,6 +33,7 @@ object Replica {
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
+
   import Replica._
   import Replicator._
   import Persistence._
@@ -39,26 +42,54 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
-  
+
   var kv = Map.empty[String, String]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
+  arbiter ! Join
+
   def receive = {
-    case JoinedPrimary   => context.become(leader)
+    case JoinedPrimary => context.become(leader)
     case JoinedSecondary => context.become(replica)
   }
 
-  /* TODO Behavior for  the leader role. */
   val leader: Receive = {
-    case _ =>
+    case Insert(k, v, id) => {
+      kv = kv + ((k, v))
+      sender ! OperationAck(id)
+    }
+    case Remove(k, id) => {
+      kv = kv - k
+      sender ! OperationAck(id)
+    }
+    case Get(k, id) => {
+      sender ! GetResult(k, kv.get(k), id)
+    }
   }
 
-  /* TODO Behavior for the replica role. */
+  var clock = 0;
+
   val replica: Receive = {
-    case _ =>
+    case Get(k, id) => {
+      sender ! GetResult(k, kv.get(k), id)
+    }
+    case Snapshot(k, vOpt, seq) if seq > clock => {
+      // ignore
+    }
+    case Snapshot(k, vOpt, seq) if seq < clock => {
+      sender ! SnapshotAck(k, seq)
+    }
+    case Snapshot(k, vOpt, seq) /* if seq == clock */ => {
+      vOpt match {
+        case Some(v) => kv = kv + ((k, v))
+        case None => kv = kv - k
+      }
+      sender ! SnapshotAck(k, seq)
+      clock = clock + 1
+    }
   }
 
 }
