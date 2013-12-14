@@ -18,19 +18,22 @@ object Replicator {
 class Replicator(val replica: ActorRef) extends Actor {
 
   import Replicator._
-  import Replica._
+
   import context.dispatcher
 
   private case object SendPendingSnapshots
 
-  // map from sequence number to (sender, request id)
-  var acks = mutable.HashMap.empty[Long, List[(ActorRef, Long)]]
-  // not-yet-sent snapshots
-  var pending = mutable.HashMap.empty[String, Snapshot]
-  // logical clock
-  var lClock = 0L
+  private case class Acknowledgement(target: ActorRef, id: Long)
+  private case class PendingSnapshot(id: Long, msg: Any)
 
-  def getLClockAndIncrement = {
+  // logical clock
+  private var lClock = 0L
+  // acknowledgements
+  private val acks = mutable.HashMap.empty[Long, List[Acknowledgement]]
+  // not-yet-confirmed snapshots
+  private val pendingSnapshots = mutable.HashMap.empty[String, PendingSnapshot]
+
+  private def getLClockAndIncrement = {
     val ret = lClock
     lClock += 1
     ret
@@ -39,28 +42,27 @@ class Replicator(val replica: ActorRef) extends Actor {
   def receive: Receive = {
     case Replicate(key, vOpt, id) => {
       val seq = getLClockAndIncrement
-      val newAcks = (sender, id) ::
-        pending.put(key, Snapshot(key, vOpt, seq))
-        .map { s => acks.getOrElse(s.seq, List.empty[(ActorRef, Long)]) }
-        .getOrElse { List.empty[(ActorRef, Long)] }
+      val msg = Snapshot(key, vOpt, seq)
+      val newAcks = Acknowledgement(sender, id) ::
+        pendingSnapshots.put(key, PendingSnapshot(seq, msg))
+        .flatMap { s => acks.get(s.id) }
+        .getOrElse { List.empty[Acknowledgement] }
       acks.put(seq, newAcks)
     }
 
     case SnapshotAck(key, seq) => {
-      if (seq == pending.get(key).seq) {
-        pending.remove(key)
-        .flatMap { s => acks.remove(s.seq) }
-        .map { l => l.reverse }
-        .getOrElse { List.empty[(ActorRef, Long)] }
-        .foreach {
-          case (target, requestId) => target ! Replicated(key, requestId)
-        }
+      if (pendingSnapshots.get(key).exists { seq == _.id }) {
+        pendingSnapshots.remove(key)
+        .flatMap { s => acks.remove(s.id) }
+        .getOrElse { List.empty[Acknowledgement] }
+        .reverse
+        .foreach { a => a.target ! Replicated(key, a.id) }
       }
     }
 
     case SendPendingSnapshots => {
-      pending.values.toIndexedSeq.sortBy { _.seq }
-      .foreach { replica ! _ }
+      pendingSnapshots.values.toIndexedSeq.sortBy { _.id }
+      .foreach { replica ! _.msg }
     }
 
     case Terminated(`replica`) => {
@@ -70,7 +72,7 @@ class Replicator(val replica: ActorRef) extends Actor {
 
   // We die together!
   context.watch(replica)
-  // We retry once every 100 ms
+  // We retry snapshots every 100 ms
   context.system.scheduler.schedule(0 millis, 100 millis, self, SendPendingSnapshots)
 
 }
