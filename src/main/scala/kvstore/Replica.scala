@@ -39,10 +39,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import Persistence._
   import context.dispatcher
 
-  /*
-   * The contents of this actor is just a suggestion, you can implement it in any way you like.
-   */
-
   var kv = Map.empty[String, String]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
@@ -70,25 +66,25 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
   }
 
-  var clock = 0;
+  var lClock = 0L
 
   val replica: Receive = {
     case Get(k, id) => {
       sender ! GetResult(k, kv.get(k), id)
     }
-    case Snapshot(k, vOpt, seq) if seq > clock => {
+    case Snapshot(k, vOpt, seq) if seq > lClock => {
       // ignore
     }
-    case Snapshot(k, vOpt, seq) if seq < clock => {
+    case Snapshot(k, vOpt, seq) if seq < lClock => {
       sender ! SnapshotAck(k, seq)
     }
-    case Snapshot(k, vOpt, seq) /* if seq == clock */ => {
+    case Snapshot(k, vOpt, seq) /* if seq == lClock */ => {
       vOpt match {
         case Some(v) => kv = kv + ((k, v))
         case None => kv = kv - k
       }
       sender ! SnapshotAck(k, seq)
-      clock = clock + 1
+      lClock += 1
     }
   }
 
