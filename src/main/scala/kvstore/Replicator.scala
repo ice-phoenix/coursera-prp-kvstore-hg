@@ -1,14 +1,14 @@
 package kvstore
 
-import akka.actor.Props
-import akka.actor.Actor
-import akka.actor.ActorRef
+import akka.actor.{Actor, ActorRef, Props, Terminated}
 import scala.concurrent.duration._
+import scala.collection.mutable
 
 object Replicator {
+
   case class Replicate(key: String, valueOption: Option[String], id: Long)
   case class Replicated(key: String, id: Long)
-  
+
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
   case class SnapshotAck(key: String, seq: Long)
 
@@ -16,29 +16,59 @@ object Replicator {
 }
 
 class Replicator(val replica: ActorRef) extends Actor {
+
   import Replicator._
   import Replica._
   import context.dispatcher
-  
-  /*
-   * The contents of this actor is just a suggestion, you can implement it in any way you like.
-   */
 
-  // map from sequence number to pair of sender and request
-  var acks = Map.empty[Long, (ActorRef, Replicate)]
-  // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
-  var pending = Vector.empty[Snapshot]
-  
-  var _seqCounter = 0L
-  def nextSeq = {
-    val ret = _seqCounter
-    _seqCounter += 1
+  private case object SendPendingSnapshots
+
+  // map from sequence number to (sender, request id)
+  var acks = mutable.HashMap.empty[Long, List[(ActorRef, Long)]]
+  // not-yet-sent snapshots
+  var pending = mutable.HashMap.empty[String, Snapshot]
+  // logical clock
+  var lClock = 0L
+
+  def getLClockAndIncrement = {
+    val ret = lClock
+    lClock += 1
     ret
   }
-  
-  /* TODO Behavior for the Replicator. */
+
   def receive: Receive = {
-    case _ =>
+    case Replicate(key, vOpt, id) => {
+      val seq = getLClockAndIncrement
+      val oldAcks = pending.put(key, Snapshot(key, vOpt, seq)) match {
+        case None => List.empty[(ActorRef, Long)]
+        case Some(s) => acks.getOrElse(s.seq, List.empty[(ActorRef, Long)])
+      }
+      val newAcks = (sender, id) :: oldAcks
+      acks.put(seq, newAcks)
+    }
+    case SnapshotAck(key, seq) => {
+      if (seq == pending.get(key).seq) {
+        pending.remove(key)
+        .flatMap { s => acks.remove(s.seq) }
+        .map { l => l.reverse }
+        .getOrElse { List.empty[(ActorRef, Long)] }
+        .foreach {
+          case (target, requestId) => target ! Replicated(key, requestId)
+        }
+      }
+    }
+    case SendPendingSnapshots => {
+      pending.values.toIndexedSeq.sortBy { _.seq }
+      .foreach { replica ! _ }
+    }
+    case Terminated(`replica`) => {
+      context.stop(self)
+    }
   }
+
+  // We die together!
+  context.watch(replica)
+  // We retry once every 100 ms
+  context.system.scheduler.schedule(0 millis, 100 millis, self, SendPendingSnapshots)
 
 }
