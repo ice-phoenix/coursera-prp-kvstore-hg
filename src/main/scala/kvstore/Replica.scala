@@ -138,7 +138,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     context.stop(replicator)
     pendingReplicates
     .filter { case (_, pr) => pr.waitingOn.contains(replicator) }
-    .foreach { case (id, _) => complete(id) }
+    .foreach { case (id, _) => removePendingReplicate(id, replicator); tryComplete(id) }
   }
 
 
